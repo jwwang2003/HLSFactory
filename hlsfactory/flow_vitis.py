@@ -6,6 +6,8 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
 
+import dotenv
+
 from hlsfactory.design_config import FlowName
 from hlsfactory.framework import Design, ToolFlow
 from hlsfactory.utils import (
@@ -16,6 +18,64 @@ from hlsfactory.utils import (
     serialize_methods_for_dataclass,
     timeout_not_supported,
 )
+
+
+def _env_flag_true(value: str | None) -> bool:
+    return str(value).lower() in {"1", "true", "yes", "on"}
+
+
+def _get_env_or_envfile(key: str) -> str | None:
+    val = os.getenv(key)
+    if val is not None:
+        return val
+    env_fp = dotenv.find_dotenv(usecwd=True)
+    if env_fp:
+        env_vals = dotenv.dotenv_values(env_fp)
+        return env_vals.get(key)
+    return None
+
+
+IS_VIVADO_UNIFIED = _env_flag_true(_get_env_or_envfile("HLSFACTORY_IS_VIVADO_UNIFIED"))
+
+
+def get_vitis_bin(vitis_hls_bin: str | None = None) -> str:
+    """
+    Pick the Vitis HLS executable depending on whether the unified (vitis-run) or
+    legacy (vitis_hls) CLI should be used.
+    """
+    if vitis_hls_bin is not None:
+        return vitis_hls_bin
+    return find_bin_path("vitis-run" if IS_VIVADO_UNIFIED else "vitis_hls")
+
+
+def get_vivado_bin(vivado_bin: str | None = None) -> str:
+    """
+    Pick the Vivado executable depending on whether the unified (vitis-run) or
+    legacy (vivado) CLI should be used.
+    """
+    if vivado_bin is not None:
+        return vivado_bin
+    return find_bin_path("vitis-run" if IS_VIVADO_UNIFIED else "vivado")
+
+
+def build_vitis_hls_cmd(bin_path: str, tcl_script: str, mode: str = "hls") -> str:
+    """
+    Build the command line to run a TCL script with Vitis HLS, respecting the
+    unified CLI flag.
+    """
+    if IS_VIVADO_UNIFIED:
+        return f"{bin_path} --mode {mode} --tcl {tcl_script}"
+    return f"{bin_path} -f {tcl_script}"
+
+
+def build_vivado_cmd(bin_path: str, tcl_script: str) -> str:
+    """
+    Build the command line to run a TCL script with Vivado, respecting the
+    unified CLI flag.
+    """
+    if IS_VIVADO_UNIFIED:
+        return f"{bin_path} --mode vivado --tcl {tcl_script}"
+    return f"{bin_path} -mode batch -source {tcl_script}"
 
 
 def print_xml_element(node: ET.Element) -> None:
@@ -271,10 +331,7 @@ class VitisHLSSynthFlow(ToolFlow):
         env_var_xilinx_hls: str | None = None,
         env_var_xilinx_vivado: str | None = None,
     ) -> None:
-        if vitis_hls_bin is None:
-            self.vitis_hls_bin = find_bin_path("vitis_hls")
-        else:
-            self.vitis_hls_bin = vitis_hls_bin
+        self.vitis_hls_bin = get_vitis_bin(vitis_hls_bin)
 
         self.log_output = log_output
         self.log_execution_time = log_execution_time
@@ -302,7 +359,7 @@ class VitisHLSSynthFlow(ToolFlow):
 
         if timeout is not None:
             return_result = call_tool(
-                f"{self.vitis_hls_bin} {synth_tcl_name}",
+                build_vitis_hls_cmd(self.vitis_hls_bin, synth_tcl_name),
                 cwd=design_dir,
                 log_output=self.log_output,
                 timeout=timeout,
@@ -328,7 +385,7 @@ class VitisHLSSynthFlow(ToolFlow):
                 return []
         else:
             return_result = call_tool(
-                f"{self.vitis_hls_bin} {synth_tcl_name}",
+                build_vitis_hls_cmd(self.vitis_hls_bin, synth_tcl_name),
                 cwd=design_dir,
                 log_output=self.log_output,
                 raise_on_error=False,
@@ -366,10 +423,7 @@ class VitisHLSCosimSetupFlow(ToolFlow):
         vitis_hls_bin: str | None = None,
         log_output: bool = False,
     ) -> None:
-        if vitis_hls_bin is None:
-            self.vitis_hls_bin = find_bin_path("vitis_hls")
-        else:
-            self.vitis_hls_bin = vitis_hls_bin
+        self.vitis_hls_bin = get_vitis_bin(vitis_hls_bin)
 
         self.log_output = log_output
 
@@ -387,7 +441,7 @@ class VitisHLSCosimSetupFlow(ToolFlow):
         warn_for_reset_flags(build_files)
 
         return_result = call_tool(
-            f"{self.vitis_hls_bin} {cosim_setup_tcl_name}",
+            build_vitis_hls_cmd(self.vitis_hls_bin, cosim_setup_tcl_name),
             cwd=design_dir,
             log_output=self.log_output,
             timeout=timeout,
@@ -407,10 +461,7 @@ class VitisHLSCosimFlow(ToolFlow):
         vitis_hls_bin: str | None = None,
         log_output: bool = False,
     ) -> None:
-        if vitis_hls_bin is None:
-            self.vitis_hls_bin = find_bin_path("vitis_hls")
-        else:
-            self.vitis_hls_bin = vitis_hls_bin
+        self.vitis_hls_bin = get_vitis_bin(vitis_hls_bin)
 
         self.log_output = log_output
 
@@ -428,7 +479,7 @@ class VitisHLSCosimFlow(ToolFlow):
         warn_for_reset_flags(build_files)
 
         r = call_tool(
-            f"{self.vitis_hls_bin} {cosim_tcl_name}",
+            build_vitis_hls_cmd(self.vitis_hls_bin, cosim_tcl_name),
             cwd=design_dir,
             log_output=self.log_output,
             timeout=timeout,
@@ -454,10 +505,7 @@ class VitisHLSCsimFlow(ToolFlow):
         env_var_xilinx_hls: str | None = None,
         env_var_xilinx_vivado: str | None = None,
     ) -> None:
-        if vitis_hls_bin is None:
-            self.vitis_hls_bin = find_bin_path("vitis_hls")
-        else:
-            self.vitis_hls_bin = vitis_hls_bin
+        self.vitis_hls_bin = get_vitis_bin(vitis_hls_bin)
 
         self.log_output = log_output
 
@@ -481,7 +529,7 @@ class VitisHLSCsimFlow(ToolFlow):
             os.environ["XILINX_VIVADO"] = self.env_var_xilinx_vivado
 
         r = call_tool(
-            f"{self.vitis_hls_bin} {csim_tcl_name}",
+            build_vitis_hls_cmd(self.vitis_hls_bin, csim_tcl_name),
             cwd=design_dir,
             log_output=self.log_output,
             timeout=timeout,
@@ -507,10 +555,7 @@ class VitisHLSImplFlow(ToolFlow):
         env_var_xilinx_hls: str | None = None,
         env_var_xilinx_vivado: str | None = None,
     ) -> None:
-        if vitis_hls_bin is None:
-            self.vitis_hls_bin = find_bin_path("vitis_hls")
-        else:
-            self.vitis_hls_bin = vitis_hls_bin
+        self.vitis_hls_bin = get_vitis_bin(vitis_hls_bin)
 
         self.log_output = log_output
         self.env_var_xilinx_hls = env_var_xilinx_hls
@@ -529,14 +574,14 @@ class VitisHLSImplFlow(ToolFlow):
         check_build_files_exist(build_files)
         warn_for_reset_flags(build_files)
 
-        if self.env_var_xilinx_hls:
-            os.environ["XILINX_HLS"] = self.env_var_xilinx_hls
-        if self.env_var_xilinx_vivado:
-            os.environ["XILINX_VIVADO"] = self.env_var_xilinx_vivado
+        # if self.env_var_xilinx_hls:
+        #     os.environ["XILINX_HLS"] = self.env_var_xilinx_hls
+        # if self.env_var_xilinx_vivado:
+        #     os.environ["XILINX_VIVADO"] = self.env_var_xilinx_vivado
 
         if timeout is not None:
             return_result = call_tool(
-                f"{self.vitis_hls_bin} {impl_tcl_name}",
+                build_vitis_hls_cmd(self.vitis_hls_bin, impl_tcl_name),
                 cwd=design_dir,
                 log_output=self.log_output,
                 timeout=timeout,
@@ -557,7 +602,7 @@ class VitisHLSImplFlow(ToolFlow):
                 return []
         else:
             return_result = call_tool(
-                f"{self.vitis_hls_bin} {impl_tcl_name}",
+                build_vitis_hls_cmd(self.vitis_hls_bin, impl_tcl_name),
                 cwd=design_dir,
                 log_output=self.log_output,
                 raise_on_error=False,
@@ -587,15 +632,9 @@ class VitisHLSImplReportFlow(ToolFlow):
         env_var_xilinx_hls: str | None = None,
         env_var_xilinx_vivado: str | None = None,
     ) -> None:
-        if vitis_hls_bin is None:
-            self.vitis_hls_bin = find_bin_path("vitis_hls")
-        else:
-            self.vitis_hls_bin = vitis_hls_bin
+        self.vitis_hls_bin = get_vitis_bin(vitis_hls_bin)
 
-        if vivado_bin is None:
-            self.vivado_bin = find_bin_path("vivado")
-        else:
-            self.vivado_bin = vivado_bin
+        self.vivado_bin = get_vivado_bin(vivado_bin)
 
         self.log_output = log_output
         self.env_var_xilinx_hls = env_var_xilinx_hls
@@ -635,7 +674,7 @@ class VitisHLSImplReportFlow(ToolFlow):
         tcl_run_vivado_reporting_fp.write_text(s)
 
         return_result = call_tool(
-            f"{self.vivado_bin} -mode batch -source run_vivado_reporting.tcl",
+            build_vivado_cmd(self.vivado_bin, "run_vivado_reporting.tcl"),
             cwd=design_dir,
         )
         if return_result == CallToolResult.ERROR:
