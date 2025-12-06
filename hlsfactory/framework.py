@@ -301,13 +301,17 @@ class Flow(ABC):
                 initargs=(cores_to_use,),
             )
 
-        new_designs_lists = pool.map(
-            partial(self.execute, timeout=timeout),
-            tqdm.tqdm(designs),
-            chunksize=1,
-        )
-        pool.close()
-        pool.join()
+        worker = partial(self.execute, timeout=timeout)
+        progress = tqdm.tqdm(total=len(designs))
+        new_designs_lists: list[list[Design]] = []
+        try:
+            for result in pool.imap(worker, designs, chunksize=1):
+                new_designs_lists.append(result)
+                progress.update()
+        finally:
+            progress.close()
+            pool.close()
+            pool.join()
         return [design for sublist in new_designs_lists for design in sublist]
 
     def default_new_dataset_name_fn(self) -> Callable[[str], str]:
@@ -405,13 +409,17 @@ class Flow(ABC):
                 initargs=(cores_to_use,),
             )
 
-        new_designs_lists = pool.map(
-            partial(self.execute, timeout=timeout),
-            tqdm.tqdm(designs),
-            chunksize=par_chunksize,
-        )
-        pool.close()
-        pool.join()
+        worker = partial(self.execute, timeout=timeout)
+        progress = tqdm.tqdm(total=len(designs))
+        new_designs_lists: list[list[Design]] = []
+        try:
+            for result in pool.imap(worker, designs, chunksize=par_chunksize):
+                new_designs_lists.append(result)
+                progress.update()
+        finally:
+            progress.close()
+            pool.close()
+            pool.join()
 
         if new_designs_lists is None:
             raise ValueError("new_designs_lists is None")
