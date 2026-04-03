@@ -3,6 +3,7 @@ from __future__ import annotations
 import enum
 import multiprocessing
 import shutil
+import traceback
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable
@@ -270,6 +271,34 @@ def worker_init(core_queue: multiprocessing.Queue) -> None:
         )
 
 
+def execute_flow_safe(
+    flow: "Flow",
+    design: "Design",
+    timeout: float | None = None,
+) -> list["Design"]:
+    try:
+        return flow.execute(design, timeout=timeout)
+    except Exception:
+        print(
+            f"[{design.dir}] Unhandled exception during flow `{flow.name}`:\n"
+            f"{traceback.format_exc()}",
+            flush=True,
+        )
+        return []
+
+
+def shutdown_pool(
+    pool: multiprocessing.pool.Pool,
+    *,
+    terminate: bool,
+) -> None:
+    if terminate:
+        pool.terminate()
+    else:
+        pool.close()
+    pool.join()
+
+
 class Flow(ABC):
     name: str
 
@@ -301,17 +330,21 @@ class Flow(ABC):
                 initargs=(cores_to_use,),
             )
 
-        worker = partial(self.execute, timeout=timeout)
-        progress = tqdm.tqdm(total=len(designs))
-        new_designs_lists: list[list[Design]] = []
+        should_terminate_pool = True
         try:
-            for result in pool.imap(worker, designs, chunksize=1):
-                new_designs_lists.append(result)
-                progress.update()
+            new_designs_lists = list(
+                tqdm.tqdm(
+                    pool.imap(
+                        partial(execute_flow_safe, self, timeout=timeout),
+                        designs,
+                        chunksize=1,
+                    ),
+                    total=len(designs),
+                )
+            )
+            should_terminate_pool = False
         finally:
-            progress.close()
-            pool.close()
-            pool.join()
+            shutdown_pool(pool, terminate=should_terminate_pool)
         return [design for sublist in new_designs_lists for design in sublist]
 
     def default_new_dataset_name_fn(self) -> Callable[[str], str]:
@@ -409,17 +442,21 @@ class Flow(ABC):
                 initargs=(cores_to_use,),
             )
 
-        worker = partial(self.execute, timeout=timeout)
-        progress = tqdm.tqdm(total=len(designs))
-        new_designs_lists: list[list[Design]] = []
+        should_terminate_pool = True
         try:
-            for result in pool.imap(worker, designs, chunksize=par_chunksize):
-                new_designs_lists.append(result)
-                progress.update()
+            new_designs_lists = list(
+                tqdm.tqdm(
+                    pool.imap(
+                        partial(execute_flow_safe, self, timeout=timeout),
+                        designs,
+                        chunksize=par_chunksize,
+                    ),
+                    total=len(designs),
+                )
+            )
+            should_terminate_pool = False
         finally:
-            progress.close()
-            pool.close()
-            pool.join()
+            shutdown_pool(pool, terminate=should_terminate_pool)
 
         if new_designs_lists is None:
             raise ValueError("new_designs_lists is None")
