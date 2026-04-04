@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shlex
 import shutil
 import time
 import xml.etree.ElementTree as ET
@@ -78,6 +79,13 @@ def get_vitis_bin(vitis_hls_bin: str | None = None) -> str:
     legacy (vitis_hls) CLI should be used.
     """
     if vitis_hls_bin is not None:
+        requested_path = Path(vitis_hls_bin)
+        if requested_path.exists():
+            return vitis_hls_bin
+        if requested_path.name == "vitis_hls":
+            vitis_run_bin = requested_path.with_name("vitis-run")
+            if vitis_run_bin.exists():
+                return str(vitis_run_bin)
         return vitis_hls_bin
 
     override = get_unified_cli_override()
@@ -91,17 +99,10 @@ def get_vitis_bin(vitis_hls_bin: str | None = None) -> str:
 
 def get_vivado_bin(vivado_bin: str | None = None) -> str:
     """
-    Pick the Vivado executable depending on whether the unified (vitis-run) or
-    legacy (vivado) CLI should be used.
+    Pick the Vivado executable.
     """
     if vivado_bin is not None:
         return vivado_bin
-
-    override = get_unified_cli_override()
-    if override is True:
-        return _find_first_available_bin("vitis-run", "vivado")
-    if override is False:
-        return _find_first_available_bin("vivado", "vitis-run")
 
     return _find_first_available_bin("vivado", "vitis-run")
 
@@ -111,19 +112,91 @@ def build_vitis_hls_cmd(bin_path: str, tcl_script: str, mode: str = "hls") -> st
     Build the command line to run a TCL script with Vitis HLS, respecting the
     unified CLI flag.
     """
+    quoted_bin = shlex.quote(bin_path)
+    quoted_mode = shlex.quote(mode)
+    quoted_tcl = shlex.quote(tcl_script)
     if uses_unified_cli(bin_path):
-        return f"{bin_path} --mode {mode} --tcl {tcl_script}"
-    return f"{bin_path} -f {tcl_script}"
+        return f"{quoted_bin} --mode {quoted_mode} --tcl {quoted_tcl}"
+    return f"{quoted_bin} -f {quoted_tcl}"
 
 
 def build_vivado_cmd(bin_path: str, tcl_script: str) -> str:
     """
-    Build the command line to run a TCL script with Vivado, respecting the
-    unified CLI flag.
+    Build the command line to run a TCL script with Vivado.
     """
-    if uses_unified_cli(bin_path):
-        return f"{bin_path} --mode vivado --tcl {tcl_script}"
-    return f"{bin_path} -mode batch -source {tcl_script}"
+    quoted_bin = shlex.quote(bin_path)
+    quoted_tcl = shlex.quote(tcl_script)
+    if Path(bin_path).name.lower().startswith("vitis-run"):
+        return f"{quoted_bin} --mode vivado --tcl {quoted_tcl}"
+    return f"{quoted_bin} -mode batch -source {quoted_tcl}"
+
+
+def _settings_script_from_install(install_path: str | None) -> Path | None:
+    if install_path is None:
+        return None
+
+    settings_script = Path(install_path) / "settings64.sh"
+    if settings_script.exists():
+        return settings_script
+
+    return None
+
+
+def _settings_script_from_bin(bin_path: str | None) -> Path | None:
+    if bin_path is None:
+        return None
+
+    bin_path_obj = Path(bin_path).resolve()
+    for parent in (bin_path_obj.parent, *bin_path_obj.parents):
+        settings_script = parent / "settings64.sh"
+        if settings_script.exists():
+            return settings_script
+
+    return None
+
+
+def get_vitis_settings_script(
+    vitis_hls_bin: str | None,
+    env_var_xilinx_hls: str | None,
+    env_var_xilinx_vivado: str | None,
+) -> Path | None:
+    hls_settings = _settings_script_from_install(env_var_xilinx_hls)
+    if hls_settings is not None:
+        return hls_settings
+
+    bin_settings = _settings_script_from_bin(vitis_hls_bin)
+    if bin_settings is not None:
+        return bin_settings
+
+    vivado_settings = _settings_script_from_install(env_var_xilinx_vivado)
+    return vivado_settings
+
+
+def get_vivado_settings_script(
+    vivado_bin: str | None,
+    env_var_xilinx_hls: str | None,
+    env_var_xilinx_vivado: str | None,
+) -> Path | None:
+    vivado_settings = _settings_script_from_install(env_var_xilinx_vivado)
+
+    if vivado_settings is not None:
+        return vivado_settings
+
+    bin_settings = _settings_script_from_bin(vivado_bin)
+    if bin_settings is not None:
+        return bin_settings
+
+    return _settings_script_from_install(env_var_xilinx_hls)
+
+
+def wrap_cmd_with_settings(cmd: str, settings_script: Path | None) -> str:
+    if settings_script is None:
+        return cmd
+
+    inner_cmd = (
+        f"source {shlex.quote(str(settings_script))} >/dev/null 2>&1 && {cmd}"
+    )
+    return f"bash -lc {shlex.quote(inner_cmd)}"
 
 
 def print_xml_element(node: ET.Element) -> None:
@@ -385,6 +458,11 @@ class VitisHLSSynthFlow(ToolFlow):
         self.log_execution_time = log_execution_time
         self.env_var_xilinx_hls = env_var_xilinx_hls
         self.env_var_xilinx_vivado = env_var_xilinx_vivado
+        self.settings_script = get_vitis_settings_script(
+            self.vitis_hls_bin,
+            env_var_xilinx_hls,
+            env_var_xilinx_vivado,
+        )
 
     def execute(self, design: Design, timeout: float | None = None) -> list[Design]:
         t_0 = time.perf_counter()
@@ -407,7 +485,10 @@ class VitisHLSSynthFlow(ToolFlow):
 
         if timeout is not None:
             return_result = call_tool(
-                build_vitis_hls_cmd(self.vitis_hls_bin, synth_tcl_name),
+                wrap_cmd_with_settings(
+                    build_vitis_hls_cmd(self.vitis_hls_bin, synth_tcl_name),
+                    self.settings_script,
+                ),
                 cwd=design_dir,
                 log_output=self.log_output,
                 timeout=timeout,
@@ -433,7 +514,10 @@ class VitisHLSSynthFlow(ToolFlow):
                 return []
         else:
             return_result = call_tool(
-                build_vitis_hls_cmd(self.vitis_hls_bin, synth_tcl_name),
+                wrap_cmd_with_settings(
+                    build_vitis_hls_cmd(self.vitis_hls_bin, synth_tcl_name),
+                    self.settings_script,
+                ),
                 cwd=design_dir,
                 log_output=self.log_output,
                 raise_on_error=False,
@@ -474,6 +558,7 @@ class VitisHLSCosimSetupFlow(ToolFlow):
         self.vitis_hls_bin = get_vitis_bin(vitis_hls_bin)
 
         self.log_output = log_output
+        self.settings_script = get_vitis_settings_script(self.vitis_hls_bin, None, None)
 
     def execute(self, design: Design, timeout: float | None = None) -> list[Design]:
         design_dir = design.dir
@@ -489,7 +574,10 @@ class VitisHLSCosimSetupFlow(ToolFlow):
         warn_for_reset_flags(build_files)
 
         return_result = call_tool(
-            build_vitis_hls_cmd(self.vitis_hls_bin, cosim_setup_tcl_name),
+            wrap_cmd_with_settings(
+                build_vitis_hls_cmd(self.vitis_hls_bin, cosim_setup_tcl_name),
+                self.settings_script,
+            ),
             cwd=design_dir,
             log_output=self.log_output,
             timeout=timeout,
@@ -512,6 +600,7 @@ class VitisHLSCosimFlow(ToolFlow):
         self.vitis_hls_bin = get_vitis_bin(vitis_hls_bin)
 
         self.log_output = log_output
+        self.settings_script = get_vitis_settings_script(self.vitis_hls_bin, None, None)
 
     def execute(self, design: Design, timeout: float | None = None) -> list[Design]:
         design_dir = design.dir
@@ -527,7 +616,10 @@ class VitisHLSCosimFlow(ToolFlow):
         warn_for_reset_flags(build_files)
 
         r = call_tool(
-            build_vitis_hls_cmd(self.vitis_hls_bin, cosim_tcl_name),
+            wrap_cmd_with_settings(
+                build_vitis_hls_cmd(self.vitis_hls_bin, cosim_tcl_name),
+                self.settings_script,
+            ),
             cwd=design_dir,
             log_output=self.log_output,
             timeout=timeout,
@@ -559,6 +651,11 @@ class VitisHLSCsimFlow(ToolFlow):
 
         self.env_var_xilinx_hls = env_var_xilinx_hls
         self.env_var_xilinx_vivado = env_var_xilinx_vivado
+        self.settings_script = get_vitis_settings_script(
+            self.vitis_hls_bin,
+            env_var_xilinx_hls,
+            env_var_xilinx_vivado,
+        )
 
     def execute(self, design: Design, timeout: float | None = None) -> list[Design]:
         design_dir = design.dir
@@ -577,7 +674,10 @@ class VitisHLSCsimFlow(ToolFlow):
             os.environ["XILINX_VIVADO"] = self.env_var_xilinx_vivado
 
         r = call_tool(
-            build_vitis_hls_cmd(self.vitis_hls_bin, csim_tcl_name),
+            wrap_cmd_with_settings(
+                build_vitis_hls_cmd(self.vitis_hls_bin, csim_tcl_name),
+                self.settings_script,
+            ),
             cwd=design_dir,
             log_output=self.log_output,
             timeout=timeout,
@@ -608,6 +708,11 @@ class VitisHLSImplFlow(ToolFlow):
         self.log_output = log_output
         self.env_var_xilinx_hls = env_var_xilinx_hls
         self.env_var_xilinx_vivado = env_var_xilinx_vivado
+        self.settings_script = get_vitis_settings_script(
+            self.vitis_hls_bin,
+            env_var_xilinx_hls,
+            env_var_xilinx_vivado,
+        )
 
     def execute(self, design: Design, timeout: float | None = None) -> list[Design]:
         t_0 = time.perf_counter()
@@ -629,7 +734,10 @@ class VitisHLSImplFlow(ToolFlow):
 
         if timeout is not None:
             return_result = call_tool(
-                build_vitis_hls_cmd(self.vitis_hls_bin, impl_tcl_name),
+                wrap_cmd_with_settings(
+                    build_vitis_hls_cmd(self.vitis_hls_bin, impl_tcl_name),
+                    self.settings_script,
+                ),
                 cwd=design_dir,
                 log_output=self.log_output,
                 timeout=timeout,
@@ -650,7 +758,10 @@ class VitisHLSImplFlow(ToolFlow):
                 return []
         else:
             return_result = call_tool(
-                build_vitis_hls_cmd(self.vitis_hls_bin, impl_tcl_name),
+                wrap_cmd_with_settings(
+                    build_vitis_hls_cmd(self.vitis_hls_bin, impl_tcl_name),
+                    self.settings_script,
+                ),
                 cwd=design_dir,
                 log_output=self.log_output,
                 raise_on_error=False,
@@ -687,6 +798,11 @@ class VitisHLSImplReportFlow(ToolFlow):
         self.log_output = log_output
         self.env_var_xilinx_hls = env_var_xilinx_hls
         self.env_var_xilinx_vivado = env_var_xilinx_vivado
+        self.settings_script = get_vivado_settings_script(
+            self.vivado_bin,
+            env_var_xilinx_hls,
+            env_var_xilinx_vivado,
+        )
 
     def execute(self, design: Design, timeout: float | None = None) -> list[Design]:
         t_0 = time.perf_counter()
@@ -722,7 +838,10 @@ class VitisHLSImplReportFlow(ToolFlow):
         tcl_run_vivado_reporting_fp.write_text(s)
 
         return_result = call_tool(
-            build_vivado_cmd(self.vivado_bin, "run_vivado_reporting.tcl"),
+            wrap_cmd_with_settings(
+                build_vivado_cmd(self.vivado_bin, "run_vivado_reporting.tcl"),
+                self.settings_script,
+            ),
             cwd=design_dir,
         )
         if return_result == CallToolResult.ERROR:
