@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import shutil
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -13,15 +14,27 @@ from hlsfactory.framework import Design, ToolFlow
 from hlsfactory.utils import (
     CallToolResult,
     call_tool,
-    find_bin_path,
     log_execution_time_to_file,
     serialize_methods_for_dataclass,
     timeout_not_supported,
 )
 
 
-def _env_flag_true(value: str | None) -> bool:
-    return str(value).lower() in {"1", "true", "yes", "on"}
+def _parse_env_flag(value: str | None) -> bool | None:
+    if value is None:
+        return None
+
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+
+    msg = (
+        "HLSFACTORY_IS_VIVADO_UNIFIED must be one of "
+        "{1,true,yes,on,0,false,no,off}"
+    )
+    raise ValueError(msg)
 
 
 def _get_env_or_envfile(key: str) -> str | None:
@@ -35,7 +48,28 @@ def _get_env_or_envfile(key: str) -> str | None:
     return None
 
 
-IS_VIVADO_UNIFIED = _env_flag_true(_get_env_or_envfile("HLSFACTORY_IS_VIVADO_UNIFIED"))
+def get_unified_cli_override() -> bool | None:
+    return _parse_env_flag(_get_env_or_envfile("HLSFACTORY_IS_VIVADO_UNIFIED"))
+
+
+def _find_first_available_bin(*cmds: str) -> str:
+    for cmd in cmds:
+        bin_path = shutil.which(cmd)
+        if bin_path is not None:
+            return bin_path
+
+    cmd_list = ", ".join(f"`{cmd}`" for cmd in cmds)
+    msg = f"Could not find any supported executable automatically: {cmd_list}."
+    raise RuntimeError(msg)
+
+
+def uses_unified_cli(bin_path: str) -> bool:
+    override = get_unified_cli_override()
+    if override is not None:
+        return override
+
+    bin_name = Path(bin_path).name.lower()
+    return bin_name.startswith("vitis-run")
 
 
 def get_vitis_bin(vitis_hls_bin: str | None = None) -> str:
@@ -45,7 +79,14 @@ def get_vitis_bin(vitis_hls_bin: str | None = None) -> str:
     """
     if vitis_hls_bin is not None:
         return vitis_hls_bin
-    return find_bin_path("vitis-run" if IS_VIVADO_UNIFIED else "vitis_hls")
+
+    override = get_unified_cli_override()
+    if override is True:
+        return _find_first_available_bin("vitis-run", "vitis_hls")
+    if override is False:
+        return _find_first_available_bin("vitis_hls", "vitis-run")
+
+    return _find_first_available_bin("vitis_hls", "vitis-run")
 
 
 def get_vivado_bin(vivado_bin: str | None = None) -> str:
@@ -55,7 +96,14 @@ def get_vivado_bin(vivado_bin: str | None = None) -> str:
     """
     if vivado_bin is not None:
         return vivado_bin
-    return find_bin_path("vitis-run" if IS_VIVADO_UNIFIED else "vivado")
+
+    override = get_unified_cli_override()
+    if override is True:
+        return _find_first_available_bin("vitis-run", "vivado")
+    if override is False:
+        return _find_first_available_bin("vivado", "vitis-run")
+
+    return _find_first_available_bin("vivado", "vitis-run")
 
 
 def build_vitis_hls_cmd(bin_path: str, tcl_script: str, mode: str = "hls") -> str:
@@ -63,7 +111,7 @@ def build_vitis_hls_cmd(bin_path: str, tcl_script: str, mode: str = "hls") -> st
     Build the command line to run a TCL script with Vitis HLS, respecting the
     unified CLI flag.
     """
-    if IS_VIVADO_UNIFIED:
+    if uses_unified_cli(bin_path):
         return f"{bin_path} --mode {mode} --tcl {tcl_script}"
     return f"{bin_path} -f {tcl_script}"
 
@@ -73,7 +121,7 @@ def build_vivado_cmd(bin_path: str, tcl_script: str) -> str:
     Build the command line to run a TCL script with Vivado, respecting the
     unified CLI flag.
     """
-    if IS_VIVADO_UNIFIED:
+    if uses_unified_cli(bin_path):
         return f"{bin_path} --mode vivado --tcl {tcl_script}"
     return f"{bin_path} -mode batch -source {tcl_script}"
 
