@@ -199,6 +199,21 @@ def wrap_cmd_with_settings(cmd: str, settings_script: Path | None) -> str:
     return f"bash -lc {shlex.quote(inner_cmd)}"
 
 
+def build_noninteractive_vitis_tcl(design_dir: Path, tcl_script: str) -> str:
+    """
+    Create a small wrapper TCL that sources the requested script and exits.
+
+    Older ``vitis_hls`` releases can stay at an interactive prompt after
+    ``-f <script>`` completes unless the TCL explicitly exits. HLSFactory's
+    dataset scripts generally do not include ``exit``, so we materialize a
+    wrapper next to the design and invoke that instead.
+    """
+    wrapper_name = f"__hlsfactory_run__{Path(tcl_script).name}"
+    wrapper_path = design_dir / wrapper_name
+    wrapper_path.write_text(f"source {tcl_script}\nexit\n")
+    return wrapper_name
+
+
 def safe_touch(path: Path) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -505,6 +520,7 @@ class VitisHLSSynthFlow(ToolFlow):
         fp_hls_synth_tcl = design_dir / synth_tcl_name
         build_files = [fp_hls_synth_tcl]
         check_build_files_exist(build_files)
+        synth_run_tcl_name = build_noninteractive_vitis_tcl(design_dir, synth_tcl_name)
 
         if self.env_var_xilinx_hls:
             os.environ["XILINX_HLS"] = self.env_var_xilinx_hls
@@ -514,7 +530,7 @@ class VitisHLSSynthFlow(ToolFlow):
         if timeout is not None:
             return_result = call_tool(
                 wrap_cmd_with_settings(
-                    build_vitis_hls_cmd(self.vitis_hls_bin, synth_tcl_name),
+                    build_vitis_hls_cmd(self.vitis_hls_bin, synth_run_tcl_name),
                     self.settings_script,
                 ),
                 cwd=design_dir,
@@ -543,7 +559,7 @@ class VitisHLSSynthFlow(ToolFlow):
         else:
             return_result = call_tool(
                 wrap_cmd_with_settings(
-                    build_vitis_hls_cmd(self.vitis_hls_bin, synth_tcl_name),
+                    build_vitis_hls_cmd(self.vitis_hls_bin, synth_run_tcl_name),
                     self.settings_script,
                 ),
                 cwd=design_dir,
@@ -754,6 +770,7 @@ class VitisHLSImplFlow(ToolFlow):
         build_files = [fp_hls_ip_export]
         check_build_files_exist(build_files)
         warn_for_reset_flags(build_files)
+        impl_run_tcl_name = build_noninteractive_vitis_tcl(design_dir, impl_tcl_name)
 
         # if self.env_var_xilinx_hls:
         #     os.environ["XILINX_HLS"] = self.env_var_xilinx_hls
@@ -763,7 +780,7 @@ class VitisHLSImplFlow(ToolFlow):
         if timeout is not None:
             return_result = call_tool(
                 wrap_cmd_with_settings(
-                    build_vitis_hls_cmd(self.vitis_hls_bin, impl_tcl_name),
+                    build_vitis_hls_cmd(self.vitis_hls_bin, impl_run_tcl_name),
                     self.settings_script,
                 ),
                 cwd=design_dir,
@@ -787,7 +804,7 @@ class VitisHLSImplFlow(ToolFlow):
         else:
             return_result = call_tool(
                 wrap_cmd_with_settings(
-                    build_vitis_hls_cmd(self.vitis_hls_bin, impl_tcl_name),
+                    build_vitis_hls_cmd(self.vitis_hls_bin, impl_run_tcl_name),
                     self.settings_script,
                 ),
                 cwd=design_dir,
