@@ -199,6 +199,34 @@ def wrap_cmd_with_settings(cmd: str, settings_script: Path | None) -> str:
     return f"bash -lc {shlex.quote(inner_cmd)}"
 
 
+def safe_touch(path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch()
+    except FileNotFoundError:
+        return
+
+
+def safe_write_text(path: Path, content: str) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+    except FileNotFoundError:
+        return
+
+
+def safe_log_execution_time_to_file(
+    design_dir: Path,
+    flow_name: str,
+    t_0: float,
+    t_1: float,
+) -> None:
+    try:
+        log_execution_time_to_file(design_dir, flow_name, t_0, t_1)
+    except FileNotFoundError:
+        return
+
+
 def print_xml_element(node: ET.Element) -> None:
     print("".join(node.itertext()))
 
@@ -495,21 +523,21 @@ class VitisHLSSynthFlow(ToolFlow):
                 raise_on_error=False,
             )
             if return_result == CallToolResult.TIMEOUT:
-                (design_dir / f"timeout__{self.name}.txt").touch()
+                safe_touch(design_dir / f"timeout__{self.name}.txt")
                 print(f"[{design_dir}] Timeout of {timeout} seconds reached")
 
                 t_1 = time.perf_counter()
                 if self.log_execution_time:
-                    log_execution_time_to_file(design_dir, self.name, t_0, t_1)
+                    safe_log_execution_time_to_file(design_dir, self.name, t_0, t_1)
 
                 return []
             if return_result == CallToolResult.ERROR:
-                (design_dir / f"error__{self.name}.txt").touch()
+                safe_touch(design_dir / f"error__{self.name}.txt")
                 print(f"[{design_dir}] Error occurred during execution")
 
                 t_1 = time.perf_counter()
                 if self.log_execution_time:
-                    log_execution_time_to_file(design_dir, self.name, t_0, t_1)
+                    safe_log_execution_time_to_file(design_dir, self.name, t_0, t_1)
 
                 return []
         else:
@@ -523,12 +551,12 @@ class VitisHLSSynthFlow(ToolFlow):
                 raise_on_error=False,
             )
             if return_result == CallToolResult.ERROR:
-                (design_dir / f"error__{self.name}.txt").touch()
+                safe_touch(design_dir / f"error__{self.name}.txt")
                 print(f"[{design_dir}] Error occurred during execution")
 
                 t_1 = time.perf_counter()
                 if self.log_execution_time:
-                    log_execution_time_to_file(design_dir, self.name, t_0, t_1)
+                    safe_log_execution_time_to_file(design_dir, self.name, t_0, t_1)
 
                 return []
 
@@ -542,7 +570,7 @@ class VitisHLSSynthFlow(ToolFlow):
 
         t_1 = time.perf_counter()
         if self.log_execution_time:
-            log_execution_time_to_file(design_dir, self.name, t_0, t_1)
+            safe_log_execution_time_to_file(design_dir, self.name, t_0, t_1)
 
         return [design]
 
@@ -745,16 +773,16 @@ class VitisHLSImplFlow(ToolFlow):
                 shell=False,
             )
             if return_result == CallToolResult.TIMEOUT:
-                (design_dir / f"timeout__{self.name}.txt").touch()
+                safe_touch(design_dir / f"timeout__{self.name}.txt")
                 print(f"[{design_dir}] Timeout of {timeout} seconds reached")
                 t_1 = time.perf_counter()
-                log_execution_time_to_file(design_dir, self.name, t_0, t_1)
+                safe_log_execution_time_to_file(design_dir, self.name, t_0, t_1)
                 return []
             if return_result == CallToolResult.ERROR:
-                (design_dir / f"error__{self.name}.txt").touch()
+                safe_touch(design_dir / f"error__{self.name}.txt")
                 print(f"[{design_dir}] Error occurred during execution")
                 t_1 = time.perf_counter()
-                log_execution_time_to_file(design_dir, self.name, t_0, t_1)
+                safe_log_execution_time_to_file(design_dir, self.name, t_0, t_1)
                 return []
         else:
             return_result = call_tool(
@@ -768,14 +796,14 @@ class VitisHLSImplFlow(ToolFlow):
                 shell=False,
             )
             if return_result == CallToolResult.ERROR:
-                (design_dir / f"error__{self.name}.txt").touch()
+                safe_touch(design_dir / f"error__{self.name}.txt")
                 print(f"[{design_dir}] Error occurred during execution")
                 t_1 = time.perf_counter()
-                log_execution_time_to_file(design_dir, self.name, t_0, t_1)
+                safe_log_execution_time_to_file(design_dir, self.name, t_0, t_1)
                 return []
 
         t_1 = time.perf_counter()
-        log_execution_time_to_file(design_dir, self.name, t_0, t_1)
+        safe_log_execution_time_to_file(design_dir, self.name, t_0, t_1)
 
         return [design]
 
@@ -835,7 +863,7 @@ class VitisHLSImplReportFlow(ToolFlow):
         s += "close_design\n"
         s += "close_project\n"
 
-        tcl_run_vivado_reporting_fp.write_text(s)
+        safe_write_text(tcl_run_vivado_reporting_fp, s)
 
         return_result = call_tool(
             wrap_cmd_with_settings(
@@ -845,11 +873,11 @@ class VitisHLSImplReportFlow(ToolFlow):
             cwd=design_dir,
         )
         if return_result == CallToolResult.ERROR:
-            (design_dir / f"error__{self.name}.txt").touch()
+            safe_touch(design_dir / f"error__{self.name}.txt")
             print(f"[{design_dir}] Error occurred during execution")
 
             t_1 = time.perf_counter()
-            log_execution_time_to_file(design_dir, self.name, t_0, t_1)
+            safe_log_execution_time_to_file(design_dir, self.name, t_0, t_1)
 
             return []
 
@@ -862,10 +890,10 @@ class VitisHLSImplReportFlow(ToolFlow):
 
         data = VitisHLSImplReportFlow.parse_all_reports(design_dir)
         data_fp = design_dir / "data_implementation.json"
-        data_fp.write_text(json.dumps(data, indent=4))
+        safe_write_text(data_fp, json.dumps(data, indent=4))
 
         t_1 = time.perf_counter()
-        log_execution_time_to_file(design_dir, self.name, t_0, t_1)
+        safe_log_execution_time_to_file(design_dir, self.name, t_0, t_1)
 
         return [design]
 
