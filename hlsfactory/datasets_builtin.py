@@ -116,7 +116,11 @@ def dataset_auto_ntt_builder(name: str, work_dir: Path) -> DesignDataset:
     check_dataset_dir_exists(DIR_DATASET_AUTO_NTT)
     new_dir = work_dir / name
     shutil.copytree(DIR_DATASET_AUTO_NTT, new_dir)
-    return DesignDataset.from_dir(name, new_dir)
+    return DesignDataset.from_dir(
+        name,
+        new_dir,
+        exclude_dir_filter=lambda dir_path: dir_path.name in {"cpp", "src", "tcl_template"},
+    )
 
 
 def dataset_forgebench_builder(name: str, work_dir: Path) -> DesignDataset:

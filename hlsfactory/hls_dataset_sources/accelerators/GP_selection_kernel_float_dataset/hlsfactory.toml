@@ -1,4 +1,4 @@
-design_name = "DGNN_Booster_convLSTM"
+design_name = "GP_selection_kernel_float_dataset"
 dataset_name = "accelerators"
 
 [[flow_configs]]

@@ -1,4 +1,4 @@
-design_name = "DGNN_Booster_convLSTM"
+design_name = "DGNN_Booster_EvolveGCN"
 dataset_name = "accelerators"
 
 [[flow_configs]]

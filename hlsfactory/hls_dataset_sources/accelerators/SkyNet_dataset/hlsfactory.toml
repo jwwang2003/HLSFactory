@@ -1,4 +1,4 @@
-design_name = "DGNN_Booster_convLSTM"
+design_name = "SkyNet_dataset"
 dataset_name = "accelerators"
 
 [[flow_configs]]

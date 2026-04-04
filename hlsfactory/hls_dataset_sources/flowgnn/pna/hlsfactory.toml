@@ -1,5 +1,5 @@
-design_name = "DGNN_Booster_convLSTM"
-dataset_name = "accelerators"
+design_name = "pna"
+dataset_name = "flowgnn"
 
 [[flow_configs]]
 flow_name = "VitisHLSSynthFlow"
