@@ -222,6 +222,13 @@ def safe_touch(path: Path) -> None:
         return
 
 
+def safe_unlink(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except FileNotFoundError:
+        return
+
+
 def safe_write_text(path: Path, content: str) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -454,6 +461,24 @@ def auto_find_exported_ip(dir_path: Path) -> list[Path]:
     return ip_dirs  # noqa: RET504
 
 
+def auto_find_vivado_project_file(dir_path: Path) -> Path:
+    xpr_files = [path for path in dir_path.rglob("*.xpr") if path.is_file()]
+    if not xpr_files:
+        raise FileNotFoundError(f"No vivado project file found in {dir_path}")
+
+    preferred = sorted(
+        xpr_files,
+        key=lambda path: (
+            0 if "solution/impl/verilog" in path.as_posix() else 1,
+            0 if path.name == "project.xpr" else 1,
+            1 if "/impl/ip/" in path.as_posix() else 0,
+            len(path.parts),
+            str(path),
+        ),
+    )
+    return preferred[0]
+
+
 def check_build_files_exist(build_files: list[Path]) -> None:
     for fp in build_files:
         if not fp.exists():
@@ -517,6 +542,8 @@ class VitisHLSSynthFlow(ToolFlow):
         synth_tcl_name = config.require_flow_setting(
             FlowName.VITIS_HLS_SYNTH, "synth_tcl"
         )
+        safe_unlink(design_dir / f"error__{self.name}.txt")
+        safe_unlink(design_dir / f"timeout__{self.name}.txt")
         fp_hls_synth_tcl = design_dir / synth_tcl_name
         build_files = [fp_hls_synth_tcl]
         check_build_files_exist(build_files)
@@ -766,6 +793,8 @@ class VitisHLSImplFlow(ToolFlow):
         # Get TCL file path from design config
         config = design.require_config()
         impl_tcl_name = config.require_flow_setting(FlowName.VITIS_HLS_IMPL, "impl_tcl")
+        safe_unlink(design_dir / f"error__{self.name}.txt")
+        safe_unlink(design_dir / f"timeout__{self.name}.txt")
         fp_hls_ip_export = design_dir / impl_tcl_name
         build_files = [fp_hls_ip_export]
         check_build_files_exist(build_files)
@@ -861,16 +890,15 @@ class VitisHLSImplReportFlow(ToolFlow):
             os.environ["XILINX_VIVADO"] = self.env_var_xilinx_vivado
 
         design_dir = design.dir
+        safe_unlink(design_dir / f"error__{self.name}.txt")
+        safe_unlink(design_dir / f"timeout__{self.name}.txt")
 
-        vivado_xpr_file_results = list(design_dir.rglob("**/*.xpr"))
-        if len(vivado_xpr_file_results) == 0:
-            raise FileNotFoundError(f"No vivado project file found in {design_dir}")
-        vivado_xpr_file = vivado_xpr_file_results[0]
+        vivado_xpr_file = auto_find_vivado_project_file(design_dir)
 
         tcl_run_vivado_reporting_fp = design_dir / "run_vivado_reporting.tcl"
 
         s = ""
-        s += f"open_project {vivado_xpr_file}\n"
+        s += f"open_project {vivado_xpr_file.resolve()}\n"
         s += "open_run impl_1\n"
         s += "set_units -power mW\n"
         s += "report_power -hier all -file power.rpt\n"
