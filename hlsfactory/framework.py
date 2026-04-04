@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import enum
 import multiprocessing
+import signal
 import shutil
 import traceback
 from abc import ABC, abstractmethod
@@ -261,6 +262,8 @@ def count_total_designs_in_dataset_collection(
 
 
 def worker_init(core_queue: multiprocessing.Queue) -> None:
+    # Let the parent process handle Ctrl-C and tear the pool down cleanly.
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
     worker_core = core_queue.get()
     current_process = psutil.Process()
     if hasattr(current_process, "cpu_affinity"):
@@ -343,8 +346,13 @@ class Flow(ABC):
                 )
             )
             should_terminate_pool = False
+        except KeyboardInterrupt:
+            raise
         finally:
-            shutdown_pool(pool, terminate=should_terminate_pool)
+            if should_terminate_pool:
+                shutdown_pool(pool, terminate=True)
+            else:
+                shutdown_pool(pool, terminate=False)
         return [design for sublist in new_designs_lists for design in sublist]
 
     def default_new_dataset_name_fn(self) -> Callable[[str], str]:
@@ -455,8 +463,13 @@ class Flow(ABC):
                 )
             )
             should_terminate_pool = False
+        except KeyboardInterrupt:
+            raise
         finally:
-            shutdown_pool(pool, terminate=should_terminate_pool)
+            if should_terminate_pool:
+                shutdown_pool(pool, terminate=True)
+            else:
+                shutdown_pool(pool, terminate=False)
 
         if new_designs_lists is None:
             raise ValueError("new_designs_lists is None")
