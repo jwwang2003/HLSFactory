@@ -261,9 +261,13 @@ def count_total_designs_in_dataset_collection(
     return sum(count_designs_in_dataset_collection(design_datasets).values())
 
 
-def worker_init(core_queue: multiprocessing.Queue) -> None:
-    # Let the parent process handle Ctrl-C and tear the pool down cleanly.
+def ignore_sigint() -> None:
+    # Let the parent process handle Ctrl-C and tear pools down cleanly.
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+
+
+def worker_init(core_queue: multiprocessing.Queue) -> None:
+    ignore_sigint()
     worker_core = core_queue.get()
     current_process = psutil.Process()
     if hasattr(current_process, "cpu_affinity"):
@@ -290,12 +294,48 @@ def execute_flow_safe(
         return []
 
 
+def terminate_pool_worker_children(
+    pool: multiprocessing.pool.Pool,
+    *,
+    timeout: float = 2.0,
+) -> None:
+    worker_processes = getattr(pool, "_pool", ())
+    children: list[psutil.Process] = []
+    for worker in worker_processes:
+        pid = getattr(worker, "pid", None)
+        if pid is None:
+            continue
+        try:
+            children.extend(psutil.Process(pid).children(recursive=True))
+        except psutil.Error:
+            continue
+
+    terminating_children: list[psutil.Process] = []
+    for child in children:
+        try:
+            child.terminate()
+            terminating_children.append(child)
+        except psutil.Error:
+            continue
+
+    if not terminating_children:
+        return
+
+    _, alive = psutil.wait_procs(terminating_children, timeout=timeout)
+    for child in alive:
+        try:
+            child.kill()
+        except psutil.Error:
+            continue
+
+
 def shutdown_pool(
     pool: multiprocessing.pool.Pool,
     *,
     terminate: bool,
 ) -> None:
     if terminate:
+        terminate_pool_worker_children(pool)
         pool.terminate()
     else:
         pool.close()
@@ -321,7 +361,7 @@ class Flow(ABC):
         check_n_jobs_cpu_affinity(n_jobs, cpu_affinity)
 
         if cpu_affinity is None:
-            pool = multiprocessing.Pool(n_jobs)
+            pool = multiprocessing.Pool(n_jobs, initializer=ignore_sigint)
         else:
             cores_to_use = multiprocessing.Queue()
             for core in cpu_affinity:
@@ -438,7 +478,7 @@ class Flow(ABC):
                 dataset_names.append(design_dataset_name)
 
         if cpu_affinity is None:
-            pool = multiprocessing.Pool(n_jobs)
+            pool = multiprocessing.Pool(n_jobs, initializer=ignore_sigint)
         else:
             cores_to_use = multiprocessing.Queue()
             for core in cpu_affinity:
